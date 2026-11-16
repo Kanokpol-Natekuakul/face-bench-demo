@@ -15,6 +15,7 @@
   .btn:focus-within { outline: 3px solid #93c5fd; }
   .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
   .btn input { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; }
+  [hidden] { display: none !important; }
   .row { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
   .row img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex: none; }
   .verdict { font-size: 26px; font-weight: 700; margin: 0 0 4px; }
@@ -33,7 +34,7 @@
 <section id="keybox" hidden>
   <h2>ใส่ key</h2>
   <input id="key" type="password" placeholder="key จากผู้ดูแล" autocomplete="off" aria-label="key">
-  <div class="status">ถ้าเปิดจาก QR ที่ได้รับ ระบบใส่ให้อัตโนมัติ</div>
+  <div class="status">เปิดลิงก์จาก QR ที่ได้รับในเบราว์เซอร์นี้เพื่อใส่ key อัตโนมัติ ลิงก์เว็บปกติไม่มี key</div>
 </section>
 
 <section>
@@ -85,13 +86,26 @@ async function toJpeg(file) {
 }
 
 async function scan(file, statusEl) {
-  statusEl.textContent = 'กำลังส่งรูป...'
+  const key = ($('key').value || localStorage.getItem('fb-key') || '').trim()
+  if (!key) {
+    $('keybox').hidden = false
+    $('key').focus()
+    throw new Error('กรอก key ด้านบน หรือเปิดลิงก์จาก QR ที่ได้รับก่อนส่งรูป')
+  }
+  statusEl.textContent = 'กำลังเตรียมรูป...'
   const jpeg = await toJpeg(file)
+  statusEl.textContent = 'กำลังส่งรูปและรอผล...'
   const started = performance.now()
-  const res = await fetch(FN, { method: 'POST', headers: { 'x-bench-key': localStorage.getItem('fb-key') ?? '' }, body: jpeg })
+  const signal = AbortSignal.timeout(20_000)
+  const res = await fetch(FN, { method: 'POST', headers: { 'x-bench-key': key }, body: jpeg, signal })
   const roundTrip = Math.round(performance.now() - started)
   const data = await res.json().catch(() => ({}))
-  if (res.status === 403) throw new Error('key ไม่ถูกต้อง')
+  if (signal.aborted) throw signal.reason
+  if (res.status === 403) {
+    $('keybox').hidden = false
+    $('key').focus()
+    throw new Error('key ไม่ถูกต้อง กรอกใหม่ด้านบน หรือเปิดลิงก์จาก QR ที่ได้รับ')
+  }
   if (res.status === 422) throw new Error('ไม่เจอหน้าในรูป ลองถ่ายใหม่ให้เห็นหน้าชัดๆ')
   if (res.status === 546) throw new Error('function ใช้ทรัพยากรเกิน limit (546)')
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
@@ -99,7 +113,7 @@ async function scan(file, statusEl) {
   return { ...data, roundTrip, kb: Math.round(jpeg.size / 1024), url: URL.createObjectURL(jpeg) }
 }
 
-const failText = (err) => err instanceof TypeError ? 'เชื่อมต่อ function ไม่ได้ ลองใหม่อีกครั้ง' : err.message
+const failText = (err) => err.name === 'TimeoutError' ? 'ส่งรูปหรือรอผลนานเกิน 20 วินาที ลองใหม่อีกครั้ง' : err instanceof TypeError ? 'เชื่อมต่อ function ไม่ได้ ลองใหม่อีกครั้ง' : err.message
 
 const info = (d) => `${d.cold ? 'function เพิ่งเปิด (cold) · ' : ''}ประมวลผล ${d.ms.total} ms ` +
   `(ถอดรูป ${d.ms.decode} · หาหน้า ${d.ms.detect} · แปลงหน้า ${d.ms.embed})<br>` +
