@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ทดสอบสแกนหน้า</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0 auto; padding: 16px; max-width: 520px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { margin: 0 0 16px; opacity: .7; font-size: 14px; }
+  section { border: 1px solid #8884; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  .btn { position: relative; display: block; text-align: center; padding: 14px; border-radius: 10px; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
+  .btn:focus-within { outline: 3px solid #93c5fd; }
+  .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+  .btn input { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; }
+  .row { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
+  .row img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex: none; }
+  .verdict { font-size: 26px; font-weight: 700; margin: 0 0 4px; }
+  .ok { color: #16a34a; }
+  .bad { color: #dc2626; }
+  .meta { font-size: 13px; opacity: .8; line-height: 1.6; }
+  .status { font-size: 14px; margin-top: 8px; min-height: 1.2em; }
+  .link { background: none; border: 0; color: inherit; opacity: .6; text-decoration: underline; padding: 0; font: inherit; font-size: 13px; cursor: pointer; }
+  #key { width: 100%; padding: 10px; font: inherit; box-sizing: border-box; }
+</style>
+</head>
+<body>
+<h1>ทดสอบสแกนหน้า</h1>
+<p class="sub">ถ่ายรูปลงทะเบียน แล้วถ่ายอีกรูปแบบตอนเช็คอิน ระบบเทียบหน้าบน Supabase Edge Function</p>
+
+<section id="keybox" hidden>
+  <h2>ใส่ key</h2>
+  <input id="key" type="password" placeholder="key จากผู้ดูแล" autocomplete="off" aria-label="key">
+  <div class="status">ถ้าเปิดจาก QR ที่ได้รับ ระบบใส่ให้อัตโนมัติ</div>
+</section>
+
+<section>
+  <h2>1. ลงทะเบียน</h2>
+  <label class="btn" id="enrollBtn">ถ่ายรูปลงทะเบียน<input id="enrollInput" type="file" accept="image/*" capture="user"></label>
+  <div class="row" id="enrollRow" hidden><img id="enrollImg" alt="รูปลงทะเบียน"><div class="meta" id="enrollMeta"></div></div>
+  <div class="status" id="enrollStatus" role="status"></div>
+</section>
+
+<section>
+  <h2>2. เช็คอิน</h2>
+  <label class="btn" id="checkBtn" aria-disabled="true">ถ่ายรูปเช็คอิน<input id="checkInput" type="file" accept="image/*" capture="user"></label>
+  <div class="row" id="checkRow" hidden><img id="checkImg" alt="รูปเช็คอิน"><div><div class="verdict" id="verdict"></div><div class="meta" id="checkMeta"></div></div></div>
+  <div class="status" id="checkStatus" role="status"></div>
+</section>
+
+<button class="link" id="reset">ล้างข้อมูลในเครื่องนี้</button>
+
+<script type="module">
+const FN = 'https://bzfdvdnphxtemqqhsbpj.supabase.co/functions/v1/face-bench?rt=native'
+const THRESHOLD = 0.363
+const $ = (id) => document.getElementById(id)
+
+const hashKey = new URLSearchParams(location.hash.slice(1)).get('k')
+if (hashKey) {
+  localStorage.setItem('fb-key', hashKey)
+  history.replaceState(null, '', location.pathname)
+}
+$('keybox').hidden = Boolean(localStorage.getItem('fb-key'))
+$('key').addEventListener('change', () => {
+  const v = $('key').value.trim()
+  if (v) { localStorage.setItem('fb-key', v); $('keybox').hidden = true }
+})
+
+async function toJpeg(file) {
+  const bmp = await createImageBitmap(file)
+  const scale = Math.min(1, 1920 / bmp.width)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(bmp.width * scale)
+  canvas.height = Math.round(bmp.height * scale)
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height)
+  let q = 0.9
+  let blob
+  do {
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', q))
+    q -= 0.1
+  } while (blob.size > 300 * 1024 && q > 0.35)
+  return blob
+}
+
+async function scan(file, statusEl) {
+  statusEl.textContent = 'กำลังส่งรูป...'
+  const jpeg = await toJpeg(file)
+  const started = performance.now()
+  const res = await fetch(FN, { method: 'POST', headers: { 'x-bench-key': localStorage.getItem('fb-key') ?? '' }, body: jpeg })
+  const roundTrip = Math.round(performance.now() - started)
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 403) throw new Error('key ไม่ถูกต้อง')
+  if (res.status === 422) throw new Error('ไม่เจอหน้าในรูป ลองถ่ายใหม่ให้เห็นหน้าชัดๆ')
+  if (res.status === 546) throw new Error('function ใช้ทรัพยากรเกิน limit (546)')
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  statusEl.textContent = ''
+  return { ...data, roundTrip, kb: Math.round(jpeg.size / 1024), url: URL.createObjectURL(jpeg) }
+}
+
+const failText = (err) => err instanceof TypeError ? 'เชื่อมต่อ function ไม่ได้ ลองใหม่อีกครั้ง' : err.message
+
+const info = (d) => `${d.cold ? 'function เพิ่งเปิด (cold) · ' : ''}ประมวลผล ${d.ms.total} ms ` +
+  `(ถอดรูป ${d.ms.decode} · หาหน้า ${d.ms.detect} · แปลงหน้า ${d.ms.embed})<br>` +
+  `ไปกลับทั้งหมด ${d.roundTrip} ms · รูป ${d.kb} KB · RAM ${d.mem.heap + d.mem.external} MB`
+
+async function thumb(url) {
+  const img = new Image()
+  img.src = url
+  await img.decode()
+  const s = 144 / Math.min(img.width, img.height)
+  const c = document.createElement('canvas')
+  c.width = Math.round(img.width * s)
+  c.height = Math.round(img.height * s)
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+  return c.toDataURL('image/jpeg', 0.7)
+}
+
+function showEnroll(e) {
+  $('enrollRow').hidden = false
+  $('enrollImg').src = e.thumb
+  $('enrollMeta').innerHTML = `ลงทะเบียนแล้ว<br>${e.info}`
+  $('checkBtn').setAttribute('aria-disabled', 'false')
+}
+
+$('enrollInput').addEventListener('change', async (ev) => {
+  const file = ev.target.files[0]
+  ev.target.value = ''
+  if (!file) return
+  try {
+    const d = await scan(file, $('enrollStatus'))
+    const e = { embedding: d.embedding, thumb: await thumb(d.url), info: info(d) }
+    localStorage.setItem('fb-enroll', JSON.stringify(e))
+    showEnroll(e)
+  } catch (err) {
+    $('enrollStatus').textContent = failText(err)
+  }
+})
+
+$('checkInput').addEventListener('change', async (ev) => {
+  const file = ev.target.files[0]
+  ev.target.value = ''
+  const enrolled = JSON.parse(localStorage.getItem('fb-enroll') || 'null')
+  if (!file || !enrolled) return
+  try {
+    const d = await scan(file, $('checkStatus'))
+    const score = d.embedding.reduce((s, v, i) => s + v * enrolled.embedding[i], 0)
+    const pass = score >= THRESHOLD
+    $('checkRow').hidden = false
+    $('checkImg').src = d.url
+    $('verdict').textContent = pass ? 'คนเดียวกัน ✓' : 'ไม่ใช่คนเดียวกัน ✗'
+    $('verdict').className = `verdict ${pass ? 'ok' : 'bad'}`
+    $('checkMeta').innerHTML = `คะแนน ${score.toFixed(3)} (ผ่านที่ ${THRESHOLD})<br>${info(d)}`
+  } catch (err) {
+    $('checkStatus').textContent = failText(err)
+  }
+})
+
+$('reset').addEventListener('click', () => {
+  localStorage.removeItem('fb-enroll')
+  localStorage.removeItem('fb-key')
+  location.reload()
+})
+
+const saved = JSON.parse(localStorage.getItem('fb-enroll') || 'null')
+if (saved) showEnroll(saved)
+</script>
+</body>
+</html>
