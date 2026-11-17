@@ -130,6 +130,73 @@ test('threshold settings re-evaluate the latest scores without another scan', as
   assert.equal(p.context.scans, 1)
 })
 
+test('successful re-enrollment invalidates the previous check before thresholds change', async () => {
+  const p = page()
+  vm.runInContext(`globalThis.scans = 0; scan = async () => {
+    scans++
+    return { embedding: scans === 3 ? [0, 1] : [1, 0], real: 0.9, ms: { total: 1, decode: 0, detect: 0, embed: 0, spoof: 0 }, mem: { heap: 0, external: 0 }, roundTrip: 1, kb: 1, url: '' }
+  }; thumb = async () => ''`, p.context)
+  const upload = id => p.element(id).handlers.change({ target: { files: [new Blob()], value: '' } })
+  await upload('enrollInput')
+  await upload('checkInput')
+  assert.match(p.element('verdict').textContent, /คนเดียวกัน ✓/)
+  assert.match(p.element('checkMeta').innerHTML, /1.000/)
+  p.element('checkStatus').textContent = 'previous check status'
+  await upload('enrollInput')
+  assert.deepEqual(JSON.parse(p.store.get('fb-enroll')).embedding, [0, 1])
+  assert.equal(p.element('checkRow').hidden, true, 'a new enrollment must hide the old identity comparison')
+  assert.equal(p.element('verdict').textContent, '')
+  assert.equal(p.element('checkMeta').innerHTML, '')
+  assert.equal(p.element('checkStatus').textContent, '')
+  p.element('matchThreshold').value = '0.9'
+  p.element('matchThreshold').handlers.input()
+  p.element('resetSettings').handlers.click()
+  assert.equal(p.element('checkRow').hidden, true, 'changing or resetting thresholds must not restore an old comparison')
+  assert.equal(p.element('verdict').textContent, '')
+  assert.equal(p.element('checkMeta').innerHTML, '')
+  assert.equal(p.context.scans, 3, 'settings must not upload another photo')
+  await upload('checkInput')
+  assert.equal(p.element('checkRow').hidden, false)
+  assert.match(p.element('verdict').textContent, /ไม่ใช่คนเดียวกัน/)
+  assert.match(p.element('checkMeta').innerHTML, /0.000/)
+})
+
+test('a pending check cannot restore a result after the enrollment changes', async () => {
+  const p = page({ 'fb-enroll': JSON.stringify({ embedding: [1, 0], thumb: '', info: '' }) })
+  vm.runInContext(`globalThis.scans = 0; scan = () => {
+    scans++
+    if (scans === 1) return new Promise(resolve => { globalThis.finishCheck = resolve })
+    return Promise.resolve({ embedding: [0, 1], real: 0.9, ms: { total: 1 }, mem: { heap: 0, external: 0 }, roundTrip: 1, kb: 1, url: '' })
+  }; thumb = async () => ''`, p.context)
+  const upload = id => p.element(id).handlers.change({ target: { files: [new Blob()], value: '' } })
+  const pendingCheck = upload('checkInput')
+  await upload('enrollInput')
+  vm.runInContext('finishCheck({ embedding: [1, 0], real: 0.9, ms: { total: 1 }, mem: { heap: 0, external: 0 }, roundTrip: 1, kb: 1, url: "" })', p.context)
+  await pendingCheck
+  p.element('matchThreshold').value = '0.9'
+  p.element('matchThreshold').handlers.input()
+  assert.deepEqual(JSON.parse(p.store.get('fb-enroll')).embedding, [0, 1])
+  assert.equal(p.element('checkRow').hidden, true, 'the late result belongs to the previous enrollment')
+  assert.equal(p.element('verdict').textContent, '')
+  assert.equal(p.element('checkMeta').innerHTML, '')
+  assert.equal(p.context.scans, 2)
+})
+
+test('a failed re-enrollment preserves the current enrollment and its check', async () => {
+  const p = page({ 'fb-enroll': JSON.stringify({ embedding: [1, 0], thumb: '', info: '' }) })
+  vm.runInContext(`scan = async () => ({ embedding: [1, 0], real: 0.9, ms: { total: 1 }, mem: { heap: 0, external: 0 }, roundTrip: 1, kb: 1, url: '' }); thumb = async () => ''`, p.context)
+  await p.element('checkInput').handlers.change({ target: { files: [new Blob()], value: '' } })
+  const enrollment = p.store.get('fb-enroll')
+  const metadata = p.element('checkMeta').innerHTML
+  p.context.localStorage.setItem = () => { throw new Error('storage unavailable') }
+  await p.element('enrollInput').handlers.change({ target: { files: [new Blob()], value: '' } })
+  assert.match(p.element('enrollStatus').textContent, /storage unavailable/)
+  assert.equal(p.store.get('fb-enroll'), enrollment)
+  assert.equal(p.element('checkRow').hidden, false)
+  assert.match(p.element('verdict').textContent, /คนเดียวกัน ✓/)
+  assert.equal(p.element('checkMeta').innerHTML, metadata)
+})
+
 test('settings survive reload and reset without deleting the enrollment or key', () => {
   const p = page({ 'fb-key': 'test-key', 'fb-enroll': JSON.stringify({ embedding: [1, 0], thumb: '', info: '' }) })
   const chosen = { liveThreshold: 0.6, matchThreshold: 0.7, maxWidth: 800, jpegQuality: 0.8, maxKB: 100 }

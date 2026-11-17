@@ -228,6 +228,11 @@ $('enrollInput').addEventListener('change', async (ev) => {
     const d = await scan(file, $('enrollStatus'))
     const e = { embedding: d.embedding, thumb: await thumb(d.url), info: info(d) }
     localStorage.setItem('fb-enroll', JSON.stringify(e))
+    lastCheck = null
+    $('checkRow').hidden = true
+    $('verdict').textContent = ''
+    $('checkMeta').innerHTML = ''
+    $('checkStatus').textContent = ''
     showEnroll(e)
   } catch (err) {
     $('enrollStatus').textContent = failText(err)
@@ -237,10 +242,12 @@ $('enrollInput').addEventListener('change', async (ev) => {
 $('checkInput').addEventListener('change', async (ev) => {
   const file = ev.target.files[0]
   ev.target.value = ''
-  const enrolled = JSON.parse(localStorage.getItem('fb-enroll') || 'null')
+  const enrollment = localStorage.getItem('fb-enroll')
+  const enrolled = JSON.parse(enrollment || 'null')
   if (!file || !enrolled) return
   try {
     const d = await scan(file, $('checkStatus'))
+    if (localStorage.getItem('fb-enroll') !== enrollment) return
     const score = d.embedding.reduce((s, v, i) => s + v * enrolled.embedding[i], 0)
     lastCheck = { ...d, score }
     showCheck()
