@@ -25,16 +25,45 @@
   .status { font-size: 14px; margin-top: 8px; min-height: 1.2em; }
   .link { background: none; border: 0; color: inherit; opacity: .6; text-decoration: underline; padding: 0; font: inherit; font-size: 13px; cursor: pointer; }
   #key { width: 100%; padding: 10px; font: inherit; box-sizing: border-box; }
+  .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+  .settings-grid label { font-size: 14px; }
+  .settings-grid input { display: block; width: 100%; min-height: 44px; margin-top: 4px; padding: 8px; box-sizing: border-box; font: inherit; font-size: 16px; }
+  .settings-grid input:invalid { outline: 2px solid #dc2626; }
+  summary { cursor: pointer; padding: 12px 0; }
+  #resetSettings { min-height: 44px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  .row > div { min-width: 0; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <h1>ทดสอบสแกนหน้า</h1>
-<p class="sub">ถ่ายรูปลงทะเบียน แล้วถ่ายอีกรูปแบบตอนเช็คอิน ระบบเทียบหน้าและตรวจว่าเป็นหน้าสด ไม่ใช่รูปจากจอหรือกระดาษ บน Supabase Edge Function</p>
+<p class="sub">ทดลองเทียบหน้าและคัดกรองภาพจากจอหรือกระดาษ บน Supabase Edge Function ยังไม่ใช่ระบบเช็คอินจริง และไม่พิสูจน์เวลาที่ถ่ายรูป</p>
 
 <section id="keybox" hidden>
   <h2>ใส่ key</h2>
   <input id="key" type="password" placeholder="key จากผู้ดูแล" autocomplete="off" aria-label="key">
   <div class="status">เปิดลิงก์จาก QR ที่ได้รับในเบราว์เซอร์นี้เพื่อใส่ key อัตโนมัติ ลิงก์เว็บปกติไม่มี key</div>
+</section>
+
+<section aria-labelledby="settingsTitle">
+  <h2 id="settingsTitle">ตั้งค่าทดลอง</h2>
+  <form id="settingsForm">
+    <div class="settings-grid">
+      <label>เกณฑ์หน้าสด (0–1)<input id="liveThreshold" type="number" min="0" max="1" step="0.01" value="0.5" required></label>
+      <label>เกณฑ์คนเดียวกัน (−1–1)<input id="matchThreshold" type="number" min="-1" max="1" step="0.001" value="0.363" required></label>
+    </div>
+    <p class="meta">เพิ่มเกณฑ์ = ผ่านยากขึ้น · ลด = ผ่านง่ายขึ้น ไม่ได้ทำให้โมเดลแม่นขึ้น<br>เปลี่ยนเกณฑ์แล้วตัดสินผลเช็คอินล่าสุดใหม่จากคะแนนเดิม ไม่ส่งรูปซ้ำ</p>
+    <details id="imageOptions">
+      <summary>การเตรียมภาพ (ขั้นสูง)</summary>
+      <div class="settings-grid">
+        <label>ความกว้างสูงสุด (px)<input id="maxWidth" type="number" min="320" max="1920" step="1" value="1920" required></label>
+        <label>คุณภาพ JPEG เริ่มต้น<input id="jpegQuality" type="number" min="0.4" max="0.95" step="0.05" value="0.9" required></label>
+        <label>ขนาดไฟล์สูงสุด (KB)<input id="maxKB" type="number" min="50" max="1000" step="1" value="300" required></label>
+      </div>
+      <p class="meta">มีผลเมื่อส่งรูปใหม่เท่านั้น ไม่ประมวลผลรูปเก่าซ้ำ · ลดคุณภาพ JPEG อัตโนมัติได้ถึง 0.4 เพื่อให้ไม่เกินขนาดที่ตั้งไว้ การบีบภาพอาจเปลี่ยนคะแนนโมเดล</p>
+    </details>
+    <button id="resetSettings" type="button">คืนค่าเริ่มต้น</button>
+    <div class="status" id="settingsStatus" role="status" aria-live="polite">ค่าใช้เฉพาะเดโมในเบราว์เซอร์นี้ ไม่ได้เปลี่ยนโมเดลหรือค่าบน server</div>
+  </form>
 </section>
 
 <section>
@@ -55,9 +84,40 @@
 
 <script type="module">
 const FN = 'https://bzfdvdnphxtemqqhsbpj.supabase.co/functions/v1/face-bench?rt=native'
-const THRESHOLD = 0.363
-const LIVE_THRESHOLD = 0.5
 const $ = (id) => document.getElementById(id)
+const settingIds = ['liveThreshold', 'matchThreshold', 'maxWidth', 'jpegQuality', 'maxKB']
+let storedSettings
+try { storedSettings = JSON.parse(localStorage.getItem('fb-settings') || 'null') } catch {}
+for (const id of settingIds) {
+  const input = $(id)
+  if (typeof storedSettings?.[id] === 'number') input.value = storedSettings[id]
+  if (!input.checkValidity()) input.value = input.defaultValue
+}
+const settings = Object.fromEntries(settingIds.map(id => [id, Number($(id).value)]))
+let lastCheck = null
+
+function updateSettings() {
+  if (!$('settingsForm').checkValidity()) {
+    $('settingsStatus').textContent = 'ค่าตั้งค่าไม่ถูกต้อง กรุณากรอกตัวเลขในช่วงที่กำหนด'
+    return false
+  }
+  for (const id of settingIds) settings[id] = Number($(id).value)
+  try {
+    localStorage.setItem('fb-settings', JSON.stringify(settings))
+    $('settingsStatus').textContent = 'บันทึกค่าในเบราว์เซอร์นี้แล้ว · เกณฑ์ใช้กับผลล่าสุด การเตรียมภาพใช้กับรูปถัดไป'
+  } catch {
+    $('settingsStatus').textContent = 'ปรับค่าแล้ว แต่เบราว์เซอร์บันทึกค่าไม่ได้ รีเฟรชแล้วค่าจะไม่ถูกเก็บไว้'
+  }
+  showCheck()
+  return true
+}
+
+for (const id of settingIds) $(id).addEventListener('input', updateSettings)
+$('settingsForm').addEventListener('submit', ev => ev.preventDefault())
+$('resetSettings').addEventListener('click', () => {
+  for (const id of settingIds) $(id).value = $(id).defaultValue
+  updateSettings()
+})
 
 const hashKey = new URLSearchParams(location.hash.slice(1)).get('k')
 if (hashKey) {
@@ -70,20 +130,22 @@ $('key').addEventListener('change', () => {
   if (v) { localStorage.setItem('fb-key', v); $('keybox').hidden = true }
 })
 
-async function toJpeg(file) {
+async function toJpeg(file, options = settings) {
   const bmp = await createImageBitmap(file)
-  const scale = Math.min(1, 1920 / bmp.width)
+  const scale = Math.min(1, options.maxWidth / bmp.width)
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(bmp.width * scale)
   canvas.height = Math.round(bmp.height * scale)
   canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height)
-  let q = 0.9
-  let blob
-  do {
-    blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', q))
-    q -= 0.1
-  } while (blob.size > 300 * 1024 && q > 0.35)
-  return blob
+  bmp.close()
+  let quality = options.jpegQuality
+  while (true) {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+    if (!blob) throw new Error('แปลงรูปเป็น JPEG ไม่ได้ ลองเลือกรูปหรือถ่ายใหม่')
+    if (blob.size <= options.maxKB * 1024) return blob
+    if (quality <= 0.4) throw new Error(`รูปยังเกิน ${options.maxKB} KB ลองลดความกว้างหรือเพิ่มขนาดไฟล์สูงสุดในค่าตั้งค่า`)
+    quality = Math.max(0.4, +(quality - 0.1).toFixed(2))
+  }
 }
 
 async function scan(file, statusEl) {
@@ -93,8 +155,14 @@ async function scan(file, statusEl) {
     $('key').focus()
     throw new Error('กรอก key ด้านบน หรือเปิดลิงก์จาก QR ที่ได้รับก่อนส่งรูป')
   }
+  if (!$('settingsForm').checkValidity()) {
+    $('imageOptions').open = true
+    $('settingsForm').reportValidity()
+    throw new Error('ค่าตั้งค่าไม่ถูกต้อง กรุณาตรวจตัวเลขด้านบน')
+  }
+  const imageSettings = { ...settings }
   statusEl.textContent = 'กำลังเตรียมรูป...'
-  const jpeg = await toJpeg(file)
+  const jpeg = await toJpeg(file, imageSettings)
   statusEl.textContent = 'กำลังส่งรูปและรอผล...'
   const started = performance.now()
   const signal = AbortSignal.timeout(20_000)
@@ -111,15 +179,16 @@ async function scan(file, statusEl) {
   if (res.status === 546) throw new Error('function ใช้ทรัพยากรเกิน limit (546)')
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
   statusEl.textContent = ''
-  return { ...data, roundTrip, kb: Math.round(jpeg.size / 1024), url: URL.createObjectURL(jpeg) }
+  return { ...data, roundTrip, kb: Math.round(jpeg.size / 1024), imageSettings, url: URL.createObjectURL(jpeg) }
 }
 
 const failText = (err) => err.name === 'TimeoutError' ? 'ส่งรูปหรือรอผลนานเกิน 20 วินาที ลองใหม่อีกครั้ง' : err instanceof TypeError ? 'เชื่อมต่อ function ไม่ได้ ลองใหม่อีกครั้ง' : err.message
 
-const info = (d) => `หน้าสด ${d.real.toFixed(2)} (ผ่านที่ ${LIVE_THRESHOLD})<br>` +
+const info = (d) => `หน้าสด ${d.real.toFixed(2)} (ผ่านที่ ${settings.liveThreshold})<br>` +
   `${d.cold ? 'function เพิ่งเปิด (cold) · ' : ''}ประมวลผล ${d.ms.total} ms ` +
   `(ถอดรูป ${d.ms.decode} · หาหน้า ${d.ms.detect} · แปลงหน้า ${d.ms.embed} · ตรวจหน้าสด ${d.ms.spoof})<br>` +
-  `ไปกลับทั้งหมด ${d.roundTrip} ms · รูป ${d.kb} KB · RAM ${d.mem.heap + d.mem.external} MB`
+  `ไปกลับทั้งหมด ${d.roundTrip} ms · รูป ${d.kb} KB · RAM ${d.mem.heap + d.mem.external} MB` +
+  (d.imageSettings ? `<br>ค่าตอนเตรียมรูป: กว้าง ≤${d.imageSettings.maxWidth} px · JPEG เริ่ม ${d.imageSettings.jpegQuality} · จำกัด ${d.imageSettings.maxKB} KB` : '')
 
 async function thumb(url) {
   const img = new Image()
@@ -136,8 +205,19 @@ async function thumb(url) {
 function showEnroll(e) {
   $('enrollRow').hidden = false
   $('enrollImg').src = e.thumb
-  $('enrollMeta').innerHTML = `ลงทะเบียนแล้ว<br>${e.info}`
+  $('enrollMeta').innerHTML = `ลงทะเบียนแล้ว (ข้อมูลตอนลงทะเบียน)<br>${e.info}`
   $('checkBtn').setAttribute('aria-disabled', 'false')
+}
+
+function showCheck() {
+  if (!lastCheck) return
+  const live = lastCheck.real >= settings.liveThreshold
+  const same = lastCheck.score >= settings.matchThreshold
+  $('checkRow').hidden = false
+  $('checkImg').src = lastCheck.url
+  $('verdict').textContent = !live ? 'ไม่ใช่หน้าสด ✗' : same ? 'คนเดียวกัน ✓' : 'ไม่ใช่คนเดียวกัน ✗'
+  $('verdict').className = `verdict ${live && same ? 'ok' : 'bad'}`
+  $('checkMeta').innerHTML = `หน้าตรงกัน ${lastCheck.score.toFixed(3)} (ผ่านที่ ${settings.matchThreshold})<br>${info(lastCheck)}`
 }
 
 $('enrollInput').addEventListener('change', async (ev) => {
@@ -162,13 +242,8 @@ $('checkInput').addEventListener('change', async (ev) => {
   try {
     const d = await scan(file, $('checkStatus'))
     const score = d.embedding.reduce((s, v, i) => s + v * enrolled.embedding[i], 0)
-    const live = d.real >= LIVE_THRESHOLD
-    const same = score >= THRESHOLD
-    $('checkRow').hidden = false
-    $('checkImg').src = d.url
-    $('verdict').textContent = !live ? 'ไม่ใช่หน้าสด ✗' : same ? 'คนเดียวกัน ✓' : 'ไม่ใช่คนเดียวกัน ✗'
-    $('verdict').className = `verdict ${live && same ? 'ok' : 'bad'}`
-    $('checkMeta').innerHTML = `หน้าตรงกัน ${score.toFixed(3)} (ผ่านที่ ${THRESHOLD})<br>${info(d)}`
+    lastCheck = { ...d, score }
+    showCheck()
   } catch (err) {
     $('checkStatus').textContent = failText(err)
   }
@@ -177,6 +252,7 @@ $('checkInput').addEventListener('change', async (ev) => {
 $('reset').addEventListener('click', () => {
   localStorage.removeItem('fb-enroll')
   localStorage.removeItem('fb-key')
+  localStorage.removeItem('fb-settings')
   location.reload()
 })
 
