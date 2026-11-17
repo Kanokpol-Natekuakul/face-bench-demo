@@ -75,3 +75,15 @@ test('a manually entered key is used without waiting for a change event', async 
   assert.equal(p.element('enrollStatus').textContent, '')
   URL.revokeObjectURL(result.url)
 })
+
+test('a matching face fails check-in when it is not a live capture', async () => {
+  const p = page()
+  p.store.set('fb-enroll', JSON.stringify({ embedding: [1, 0] }))
+  const verdict = async (real) => {
+    vm.runInContext(`scan = async () => ({ embedding: [1, 0], real: ${real}, ms: { total: 1, decode: 0, detect: 0, embed: 0, spoof: 0 }, mem: { heap: 0, external: 0 }, roundTrip: 1, kb: 1, url: '' })`, p.context)
+    await p.element('checkInput').handlers.change({ target: { files: [new Blob()], value: '' } })
+    return p.element('verdict').textContent
+  }
+  assert.match(await verdict(0.1), /ไม่ใช่หน้าสด/)
+  assert.match(await verdict(0.9), /คนเดียวกัน ✓/)
+})

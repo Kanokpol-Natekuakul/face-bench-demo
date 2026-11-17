@@ -29,7 +29,7 @@
 </head>
 <body>
 <h1>ทดสอบสแกนหน้า</h1>
-<p class="sub">ถ่ายรูปลงทะเบียน แล้วถ่ายอีกรูปแบบตอนเช็คอิน ระบบเทียบหน้าบน Supabase Edge Function</p>
+<p class="sub">ถ่ายรูปลงทะเบียน แล้วถ่ายอีกรูปแบบตอนเช็คอิน ระบบเทียบหน้าและตรวจว่าเป็นหน้าสด ไม่ใช่รูปจากจอหรือกระดาษ บน Supabase Edge Function</p>
 
 <section id="keybox" hidden>
   <h2>ใส่ key</h2>
@@ -56,6 +56,7 @@
 <script type="module">
 const FN = 'https://bzfdvdnphxtemqqhsbpj.supabase.co/functions/v1/face-bench?rt=native'
 const THRESHOLD = 0.363
+const LIVE_THRESHOLD = 0.5
 const $ = (id) => document.getElementById(id)
 
 const hashKey = new URLSearchParams(location.hash.slice(1)).get('k')
@@ -115,8 +116,9 @@ async function scan(file, statusEl) {
 
 const failText = (err) => err.name === 'TimeoutError' ? 'ส่งรูปหรือรอผลนานเกิน 20 วินาที ลองใหม่อีกครั้ง' : err instanceof TypeError ? 'เชื่อมต่อ function ไม่ได้ ลองใหม่อีกครั้ง' : err.message
 
-const info = (d) => `${d.cold ? 'function เพิ่งเปิด (cold) · ' : ''}ประมวลผล ${d.ms.total} ms ` +
-  `(ถอดรูป ${d.ms.decode} · หาหน้า ${d.ms.detect} · แปลงหน้า ${d.ms.embed})<br>` +
+const info = (d) => `หน้าสด ${d.real.toFixed(2)} (ผ่านที่ ${LIVE_THRESHOLD})<br>` +
+  `${d.cold ? 'function เพิ่งเปิด (cold) · ' : ''}ประมวลผล ${d.ms.total} ms ` +
+  `(ถอดรูป ${d.ms.decode} · หาหน้า ${d.ms.detect} · แปลงหน้า ${d.ms.embed} · ตรวจหน้าสด ${d.ms.spoof})<br>` +
   `ไปกลับทั้งหมด ${d.roundTrip} ms · รูป ${d.kb} KB · RAM ${d.mem.heap + d.mem.external} MB`
 
 async function thumb(url) {
@@ -160,12 +162,13 @@ $('checkInput').addEventListener('change', async (ev) => {
   try {
     const d = await scan(file, $('checkStatus'))
     const score = d.embedding.reduce((s, v, i) => s + v * enrolled.embedding[i], 0)
-    const pass = score >= THRESHOLD
+    const live = d.real >= LIVE_THRESHOLD
+    const same = score >= THRESHOLD
     $('checkRow').hidden = false
     $('checkImg').src = d.url
-    $('verdict').textContent = pass ? 'คนเดียวกัน ✓' : 'ไม่ใช่คนเดียวกัน ✗'
-    $('verdict').className = `verdict ${pass ? 'ok' : 'bad'}`
-    $('checkMeta').innerHTML = `คะแนน ${score.toFixed(3)} (ผ่านที่ ${THRESHOLD})<br>${info(d)}`
+    $('verdict').textContent = !live ? 'ไม่ใช่หน้าสด ✗' : same ? 'คนเดียวกัน ✓' : 'ไม่ใช่คนเดียวกัน ✗'
+    $('verdict').className = `verdict ${live && same ? 'ok' : 'bad'}`
+    $('checkMeta').innerHTML = `หน้าตรงกัน ${score.toFixed(3)} (ผ่านที่ ${THRESHOLD})<br>${info(d)}`
   } catch (err) {
     $('checkStatus').textContent = failText(err)
   }
