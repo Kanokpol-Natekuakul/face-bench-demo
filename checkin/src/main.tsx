@@ -101,7 +101,6 @@ function Home({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<Checkin | null>(null)
   const [msg, setMsg] = useState('')
-  const req = useRef(0)
 
   async function load() {
     const [enrollments, checkins] = await Promise.all([
@@ -121,7 +120,6 @@ function Home({ session }: { session: Session }) {
   }, [])
 
   function begin() {
-    req.current++
     setResult(null)
     setMsg('')
   }
@@ -133,7 +131,6 @@ function Home({ session }: { session: Session }) {
 
   async function submit(action: Action, photo: Blob | null) {
     setCamera(null)
-    const n = req.current
     if (!photo || photo.size >= 2_000_000) {
       setMsg(errors[photo ? 'too_large' : 'bad_image'])
       return
@@ -148,7 +145,6 @@ function Home({ session }: { session: Session }) {
         signal: AbortSignal.timeout(20_000),
       })
       const body = await res.json()
-      if (n !== req.current) return
       if (!res.ok) setMsg(say(errors, body?.error) || 'ระบบขัดข้อง ลองใหม่ภายหลัง')
       else if (action === 'checkin') setResult(body)
       else {
@@ -158,19 +154,18 @@ function Home({ session }: { session: Session }) {
       }
       if (res.ok || res.status === 409) await load()
     } catch {
-      if (n === req.current) setMsg('เชื่อมต่อไม่ได้หรือรอนานเกินไป ลองใหม่อีกครั้ง')
+      setMsg(action === 'checkin' ? 'ไม่แน่ใจว่าบันทึกเวลาแล้วหรือยัง ดูประวัติด้านล่างก่อนลองใหม่' : 'เชื่อมต่อไม่ได้หรือรอนานเกินไป ลองใหม่อีกครั้ง')
+      await load()
     } finally {
-      if (n === req.current) setBusy(false)
+      setBusy(false)
     }
   }
 
   async function forget() {
     if (!window.confirm('ลบข้อมูลใบหน้า? ต้องลงทะเบียนใหม่ก่อนเช็คอินครั้งต่อไป')) return
     begin()
-    const n = req.current
     setBusy(true)
     const { error } = await supabase.from('face_enrollments').delete().eq('user_id', session.user.id)
-    if (n !== req.current) return
     if (error) setMsg('ลบไม่สำเร็จ ลองใหม่')
     else {
       setAgain(false)
@@ -282,6 +277,7 @@ function Home({ session }: { session: Session }) {
 function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => void; onCancel: () => void }) {
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
+  const cancelled = useRef(false)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
 
@@ -310,12 +306,12 @@ function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => void; on
     if (!v?.videoWidth) return
     setReady(false)
     const canvas = document.createElement('canvas')
-    const scale = Math.min(1, 1280 / v.videoWidth)
+    const scale = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight))
     canvas.width = Math.round(v.videoWidth * scale)
     canvas.height = Math.round(v.videoHeight * scale)
     canvas.getContext('2d')?.drawImage(v, 0, 0, canvas.width, canvas.height)
     stop()
-    canvas.toBlob(onShot, 'image/jpeg', 0.9)
+    canvas.toBlob(blob => cancelled.current || onShot(blob), 'image/jpeg', 0.9)
   }
 
   return (
@@ -334,6 +330,7 @@ function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => void; on
         </button>
         <button
           onClick={() => {
+            cancelled.current = true
             stop()
             onCancel()
           }}
