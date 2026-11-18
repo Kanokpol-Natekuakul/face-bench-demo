@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "mkdir -p public/models && for m in blazeface faceres antispoof liveness; do cp node_modules/@vladmandic/human/models/$m.json node_modules/@vladmandic/human/models/$m.bin public/models/ || exit 1; done",
     "build": "tsc --noEmit -p . && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
+    "@vladmandic/human": "^3.3.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
