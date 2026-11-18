@@ -94,6 +94,7 @@ function Home({ session, ready }: { session: Session; ready: boolean }) {
   const [scan, setScan] = useState<Scan | null>(null)
   const [msg, setMsg] = useState('')
   const off = busy || !ready
+  const need = !ready ? 'รอโหลดโมเดลให้เสร็จก่อน' : !consent && !name.trim() ? 'ติ๊กยินยอมและใส่ชื่อก่อน' : !consent ? 'ติ๊กยินยอมก่อน' : !name.trim() ? 'ใส่ชื่อก่อน' : ''
 
   async function load() {
     const [own, rows] = await Promise.all([
@@ -228,9 +229,14 @@ function Home({ session, ready }: { session: Session; ready: boolean }) {
                 ชื่อ
                 <input type="text" autoComplete="name" maxLength={80} value={name} onChange={e => setName(e.target.value)} />
               </label>
-              <button className="primary" disabled={!consent || !name.trim() || off} onClick={() => open('register')}>
+              <button className="primary" disabled={!consent || !name.trim() || off} aria-describedby="need" onClick={() => open('register')}>
                 ลงทะเบียนใบหน้า
               </button>
+              {need && (
+                <p id="need" className="meta">
+                  {need}
+                </p>
+              )}
             </section>
           )}
         </>
