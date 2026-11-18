@@ -58,6 +58,10 @@ function Login() {
   const [msg, setMsg] = useState('')
 
   async function go(signUp: boolean) {
+    if (!/^\S+@\S+\.\S+$/.test(email) || password.length < 6) {
+      setMsg('กรอกอีเมล และรหัสผ่านอย่างน้อย 6 ตัวในช่องด้านบนก่อน แล้วค่อยกดปุ่ม')
+      return
+    }
     setBusy(true)
     setMsg('')
     const { data, error } = signUp ? await supabase.auth.signUp({ email, password }) : await supabase.auth.signInWithPassword({ email, password })
@@ -68,11 +72,13 @@ function Login() {
 
   return (
     <form
+      noValidate
       onSubmit={e => {
         e.preventDefault()
         go(false)
       }}
     >
+      <p className="meta">ครั้งแรก: กรอกอีเมลและตั้งรหัสผ่าน 6 ตัวขึ้นไป แล้วกด “สมัครสมาชิก” เข้าระบบได้ทันที ไม่ต้องยืนยันอีเมล</p>
       <label>
         อีเมล
         <input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} />
@@ -83,7 +89,7 @@ function Login() {
       </label>
       <div className="row">
         <button className="primary" disabled={busy}>เข้าสู่ระบบ</button>
-        <button type="button" disabled={busy} onClick={e => e.currentTarget.form?.reportValidity() && go(true)}>
+        <button type="button" disabled={busy} onClick={() => go(true)}>
           สมัครสมาชิก
         </button>
       </div>
