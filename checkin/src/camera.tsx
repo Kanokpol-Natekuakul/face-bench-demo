@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
-export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => void; onCancel: () => void }) {
+export type Pose = 'front' | 'left' | 'right' | 'up' | 'down'
+
+const words: Record<Pose, string> = { front: 'มองตรง', left: 'หันซ้าย ←', right: 'หันขวา →', up: 'เงยหน้า ↑', down: 'ก้มหน้า ↓' }
+
+function useCamera() {
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
-  const cancelled = useRef(false)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
 
@@ -27,15 +30,28 @@ export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => v
     }
   }, [])
 
+  const view = <video ref={video} aria-label="ภาพจากกล้อง" playsInline muted autoPlay onLoadedData={() => setReady(true)} />
+  return { video, view, ready, setReady, error, stop }
+}
+
+function draw(v: HTMLVideoElement, max: number) {
+  const canvas = document.createElement('canvas')
+  const scale = Math.min(1, max / Math.max(v.videoWidth, v.videoHeight))
+  canvas.width = Math.round(v.videoWidth * scale)
+  canvas.height = Math.round(v.videoHeight * scale)
+  canvas.getContext('2d')?.drawImage(v, 0, 0, canvas.width, canvas.height)
+  return canvas
+}
+
+export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => void; onCancel: () => void }) {
+  const { video, view, ready, setReady, error, stop } = useCamera()
+  const cancelled = useRef(false)
+
   function shoot() {
     const v = video.current
     if (!v?.videoWidth) return
     setReady(false)
-    const canvas = document.createElement('canvas')
-    const scale = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight))
-    canvas.width = Math.round(v.videoWidth * scale)
-    canvas.height = Math.round(v.videoHeight * scale)
-    canvas.getContext('2d')?.drawImage(v, 0, 0, canvas.width, canvas.height)
+    const canvas = draw(v, 1280)
     stop()
     canvas.toBlob(blob => cancelled.current || onShot(blob), 'image/jpeg', 0.9)
   }
@@ -47,7 +63,7 @@ export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => v
       ) : (
         <>
           <p className="meta">มองกล้องตรง ๆ ในที่สว่าง แล้วกด “ถ่าย”</p>
-          <video ref={video} aria-label="ภาพจากกล้อง" playsInline muted autoPlay onLoadedData={() => setReady(true)} />
+          {view}
         </>
       )}
       <div className="row">
@@ -58,6 +74,65 @@ export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => v
           onClick={() => {
             cancelled.current = true
             stop()
+            onCancel()
+          }}
+        >
+          ยกเลิก
+        </button>
+      </div>
+    </section>
+  )
+}
+
+export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (frames: Blob[] | null) => void; onCancel: () => void }) {
+  const { video, view, ready, error, stop } = useCamera()
+  const [step, setStep] = useState(-1)
+  const timer = useRef(0)
+  const gone = useRef(false)
+  const pose: Pose | undefined = steps[step]
+
+  const halt = () => {
+    gone.current = true
+    clearTimeout(timer.current)
+    stop()
+  }
+
+  useEffect(() => halt, [])
+
+  async function run() {
+    const frames: (Blob | null)[] = []
+    for (let i = 0; i < steps.length; i++) {
+      setStep(i)
+      await new Promise(done => (timer.current = window.setTimeout(done, 1500)))
+      frames.push(await new Promise<Blob | null>(done => draw(video.current!, 640).toBlob(done, 'image/jpeg', 0.9)))
+      if (gone.current) return
+    }
+    stop()
+    onDone(frames.every((frame): frame is Blob => frame !== null) ? frames : null)
+  }
+
+  return (
+    <section>
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : (
+        <>
+          <p className={pose ? 'step' : 'meta'} role="status" data-step={pose}>
+            {pose ? words[pose] : `จะให้หันหน้าตามคำสั่ง ${steps.length} ท่า ท่าละประมาณ 1.5 วินาที ถือมือถือให้หน้าอยู่กลางจอ แล้วกด “เริ่ม”`}
+          </p>
+          {pose && <p className="meta">{`ท่า ${step + 1}/${steps.length}`}</p>}
+          {view}
+        </>
+      )}
+      <div className="row">
+        {!pose && (
+          <button className="primary" disabled={!ready} onClick={run}>
+            เริ่ม
+          </button>
+        )}
+        <button
+          onClick={() => {
+            halt()
             onCancel()
           }}
         >

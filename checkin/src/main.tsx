@@ -1,26 +1,33 @@
 import type { Session } from '@supabase/supabase-js'
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Camera } from './camera'
+import { Guided, type Pose } from './camera'
 import { supabase, url } from './supabase'
 
-type Action = 'enroll' | 'checkin'
-type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null }
+type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null; frames?: { pose: string; turn: number | null }[] | null }
+type Query = Record<string, string>
 
 const errors: Record<string, string> = {
   no_face: 'ไม่พบใบหน้า ลองใหม่ในที่สว่าง หน้าตรง',
   spoof: 'ดูเหมือนรูปถ่ายหรือหน้าจอ ลองถ่ายใหม่',
+  challenge: 'หันหน้าไม่ตรงตามคำสั่ง หรือหันน้อยไป ลองใหม่',
+  mismatch: 'ภาพแต่ละท่าไม่ใช่คนเดียวกัน ลองใหม่',
   bad_image: 'อ่านรูปไม่ได้ ลองใหม่',
+  bad_frames: 'ส่งภาพไม่ครบ ลองใหม่',
   not_enrolled: 'ยังไม่ได้ลงทะเบียนใบหน้า',
-  too_large: 'รูปใหญ่เกินไป ลองใหม่',
+  challenge_expired: 'หมดเวลา กดเช็คอินใหม่',
+  too_large: 'ภาพใหญ่เกินไป ลองใหม่',
   unauthorized: 'เซสชันหมดอายุ ออกจากระบบแล้วเข้าใหม่',
 }
 
 const reasons: Record<string, string> = {
   no_face: 'ไม่พบใบหน้า',
   spoof: 'อาจเป็นรูปถ่าย/หน้าจอ',
+  challenge: 'ไม่ได้หันตามคำสั่ง',
   mismatch: 'หน้าไม่ตรงกับที่ลงทะเบียน',
 }
+
+const sides: Record<string, string> = { left: 'ซ้าย', right: 'ขวา' }
 
 const authErrors: Record<string, string> = {
   invalid_credentials: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
@@ -107,10 +114,16 @@ function Home({ session }: { session: Session }) {
   const [history, setHistory] = useState<Checkin[]>([])
   const [again, setAgain] = useState(false)
   const [consent, setConsent] = useState(false)
-  const [camera, setCamera] = useState<Action | null>(null)
+  const [camera, setCamera] = useState<{ steps: Pose[]; query: Query } | null>(null)
+  const [locked, setLocked] = useState(false)
+  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<Checkin | null>(null)
   const [msg, setMsg] = useState('')
+  const turned = result?.frames
+    ?.filter(frame => say(sides, frame.pose))
+    .map(frame => `${say(sides, frame.pose)} ${two(frame.turn) ?? '–'}`)
+    .join(' · ')
 
   async function load() {
     const [enrollments, checkins] = await Promise.all([
@@ -134,40 +147,71 @@ function Home({ session }: { session: Session }) {
     setMsg('')
   }
 
-  function open(action: Action) {
-    begin()
-    setCamera(action)
+  async function post(query: Query, form?: FormData) {
+    const { data } = await supabase.auth.getSession()
+    const res = await fetch(`${url}/functions/v1/face-checkin?${new URLSearchParams(query)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${data.session?.access_token}` },
+      body: form,
+      signal: AbortSignal.timeout(form ? 30_000 : 20_000),
+    })
+    const body = await res.json()
+    if (res.status === 423) setLocked(true)
+    else if (!res.ok) setMsg(say(errors, body?.error) || 'ระบบขัดข้อง ลองใหม่ภายหลัง')
+    if (res.status === 409) await load()
+    return res.ok ? body : null
   }
 
-  async function submit(action: Action, photo: Blob | null) {
-    setCamera(null)
-    if (!photo || photo.size >= 2_000_000) {
-      setMsg(errors[photo ? 'too_large' : 'bad_image'])
-      return
-    }
+  async function checkin() {
+    begin()
     setBusy(true)
     try {
-      const { data } = await supabase.auth.getSession()
-      const res = await fetch(`${url}/functions/v1/face-checkin?action=${action}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${data.session?.access_token}`, 'Content-Type': 'image/jpeg' },
-        body: photo,
-        signal: AbortSignal.timeout(20_000),
-      })
-      const body = await res.json()
-      if (!res.ok) setMsg(say(errors, body?.error) || 'ระบบขัดข้อง ลองใหม่ภายหลัง')
-      else if (action === 'checkin') setResult(body)
+      const body = await post({ action: 'challenge' })
+      if (body) setCamera({ steps: ['front', ...body.steps], query: { action: 'checkin', challenge: body.id } })
+    } catch {
+      setMsg('เชื่อมต่อไม่ได้หรือรอนานเกินไป ลองใหม่อีกครั้ง')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submit(query: Query, frames: Blob[] | null) {
+    setCamera(null)
+    if (!frames || frames.reduce((total, frame) => total + frame.size, 0) >= 3_000_000) {
+      setMsg(errors[frames ? 'too_large' : 'bad_image'])
+      return
+    }
+    const form = new FormData()
+    frames.forEach((frame, i) => form.append('frame', frame, `frame-${i}.jpg`))
+    setBusy(true)
+    try {
+      const body = await post(query, form)
+      if (!body) return
+      if (query.action === 'checkin') setResult(body)
       else {
         setAgain(false)
         setConsent(false)
         setMsg('ลงทะเบียนใบหน้าแล้ว')
       }
-      if (res.ok || res.status === 409) await load()
+      await load()
     } catch {
-      setMsg(action === 'checkin' ? 'ไม่แน่ใจว่าบันทึกเวลาแล้วหรือยัง ดูประวัติด้านล่างก่อนลองใหม่' : 'เชื่อมต่อไม่ได้หรือรอนานเกินไป ลองใหม่อีกครั้ง')
+      setMsg(query.action === 'checkin' ? 'ไม่แน่ใจว่าบันทึกเวลาแล้วหรือยัง ดูประวัติด้านล่างก่อนลองใหม่' : 'เชื่อมต่อไม่ได้หรือรอนานเกินไป ลองใหม่อีกครั้ง')
       await load()
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function unlock() {
+    begin()
+    setBusy(true)
+    const { error } = await supabase.auth.signInWithPassword({ email: session.user.email!, password })
+    setBusy(false)
+    if (error) setMsg(say(authErrors, error.code) || 'รหัสผ่านไม่ถูกต้อง')
+    else {
+      setLocked(false)
+      setPassword('')
+      setMsg('ปลดล็อกแล้ว กดเช็คอินอีกครั้ง')
     }
   }
 
@@ -192,37 +236,64 @@ function Home({ session }: { session: Session }) {
         <button onClick={() => supabase.auth.signOut()}>ออกจากระบบ</button>
       </div>
       {camera ? (
-        <Camera onShot={photo => submit(camera, photo)} onCancel={() => setCamera(null)} />
+        <Guided steps={camera.steps} onDone={frames => submit(camera.query, frames)} onCancel={() => setCamera(null)} />
       ) : (
         <>
-          {enrolledAt && (
-            <section>
-              <p>ลงทะเบียนเมื่อ {when(enrolledAt)}</p>
+          {locked ? (
+            <form
+              noValidate
+              onSubmit={e => {
+                e.preventDefault()
+                unlock()
+              }}
+            >
+              <h2>ล็อกการสแกนหน้าไว้ก่อน</h2>
+              <p>เช็คอินครั้งก่อนระบบสงสัยว่าเป็นรูป หน้าจอ หรือคนอื่น ใส่รหัสผ่านอีกครั้งเพื่อปลดล็อก เหมือน iPhone ที่ให้ใส่รหัสหลังสแกนหน้าไม่ผ่าน</p>
+              <label>
+                รหัสผ่าน
+                <input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />
+              </label>
               <div className="row">
-                <button className="primary" disabled={busy} onClick={() => open('checkin')}>
-                  เช็คอิน
+                <button className="primary" disabled={busy}>
+                  ปลดล็อก
                 </button>
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    begin()
-                    setAgain(true)
-                    setConsent(false)
-                  }}
-                >
-                  ลงทะเบียนใหม่
-                </button>
-                <button disabled={busy} onClick={forget}>
-                  ลบข้อมูลใบหน้า
-                </button>
+                {enrolledAt && (
+                  <button type="button" disabled={busy} onClick={forget}>
+                    ลบข้อมูลใบหน้า
+                  </button>
+                )}
               </div>
-            </section>
+            </form>
+          ) : (
+            enrolledAt && (
+              <section>
+                <p>ลงทะเบียนเมื่อ {when(enrolledAt)}</p>
+                <div className="row">
+                  <button className="primary" disabled={busy} onClick={checkin}>
+                    เช็คอิน
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => {
+                      begin()
+                      setAgain(true)
+                      setConsent(false)
+                    }}
+                  >
+                    ลงทะเบียนใหม่
+                  </button>
+                  <button disabled={busy} onClick={forget}>
+                    ลบข้อมูลใบหน้า
+                  </button>
+                </div>
+              </section>
+            )
           )}
           {(enrolledAt === null || again) && (
             <section>
               <h2>ขอความยินยอมใช้ข้อมูลใบหน้า</h2>
               <ul>
-                <li>ระบบจะแปลงใบหน้าเป็นตัวเลข 128 ค่าเก็บไว้เทียบตอนเช็คอิน ไม่เก็บรูป</li>
+                <li>ระบบจะให้หันหน้า 5 ท่า แล้วแปลงแต่ละท่าเป็นตัวเลข 128 ค่าเก็บไว้เทียบตอนเช็คอิน ไม่เก็บรูป</li>
                 <li>ข้อมูลใบหน้าเป็นข้อมูลชีวภาพตาม PDPA ม.26 จึงต้องขอความยินยอม</li>
                 <li>ลบได้ทุกเมื่อด้วยปุ่ม “ลบข้อมูลใบหน้า”</li>
               </ul>
@@ -230,7 +301,14 @@ function Home({ session }: { session: Session }) {
                 <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />
                 ยินยอมให้ใช้ข้อมูลใบหน้าเพื่อเช็คอิน
               </label>
-              <button className="primary" disabled={!consent || busy} onClick={() => open('enroll')}>
+              <button
+                className="primary"
+                disabled={!consent || busy || locked}
+                onClick={() => {
+                  begin()
+                  setCamera({ steps: ['front', 'left', 'right', 'up', 'down'], query: { action: 'enroll' } })
+                }}
+              >
                 ลงทะเบียนใบหน้า
               </button>
             </section>
@@ -246,10 +324,12 @@ function Home({ session }: { session: Session }) {
             {result.status === 'pass' ? 'ผ่าน ✓' : 'บันทึกเวลาแล้ว แต่ต้องตรวจสอบ ⚠'}
           </p>
           {result.status !== 'pass' && <p>{say(reasons, result.reason)}</p>}
+          {result.status !== 'pass' && ['spoof', 'challenge', 'mismatch'].includes(result.reason ?? '') && <p>ครั้งต่อไปต้องใส่รหัสผ่านก่อนสแกน</p>}
           <p className="meta">
             เวลา {when(result.created_at)}
             {two(result.similarity) && ` · ความเหมือน ${two(result.similarity)}`}
             {two(result.live) && ` · หน้าสด ${two(result.live)}`}
+            {turned && ` · หัน ${turned}`}
           </p>
         </section>
       )}
