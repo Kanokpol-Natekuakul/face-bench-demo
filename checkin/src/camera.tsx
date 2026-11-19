@@ -84,12 +84,13 @@ export function Camera({ onShot, onCancel }: { onShot: (photo: Blob | null) => v
   )
 }
 
-export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (frames: Blob[] | null) => void; onCancel: () => void }) {
+export function Guided({ steps, shutter = false, onDone, onCancel }: { steps: Pose[]; shutter?: boolean; onDone: (frames: Blob[] | null) => void; onCancel: () => void }) {
   const { video, view, ready, error, stop } = useCamera()
   const [step, setStep] = useState(-1)
   const timer = useRef(0)
   const gone = useRef(false)
   const pose: Pose | undefined = steps[step]
+  const asked = pose ?? (shutter ? steps[0] : undefined)
 
   const halt = () => {
     gone.current = true
@@ -103,8 +104,9 @@ export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (fr
     const frames: (Blob | null)[] = []
     for (let i = 0; i < steps.length; i++) {
       setStep(i)
-      await new Promise(done => (timer.current = window.setTimeout(done, 1500)))
-      frames.push(await new Promise<Blob | null>(done => draw(video.current!, 640).toBlob(done, 'image/jpeg', 0.9)))
+      const photo = shutter && i === 0
+      if (!photo) await new Promise(done => (timer.current = window.setTimeout(done, 1500)))
+      frames.push(await new Promise<Blob | null>(done => draw(video.current!, photo ? 1280 : 640).toBlob(done, 'image/jpeg', 0.9)))
       if (gone.current) return
     }
     stop()
@@ -117,17 +119,21 @@ export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (fr
         <p role="alert">{error}</p>
       ) : (
         <>
-          <p className={pose ? 'step' : 'meta'} role="status" data-step={pose}>
-            {pose ? words[pose] : `จะให้หันหน้าตามคำสั่ง ${steps.length} ท่า ท่าละประมาณ 1.5 วินาที ถือมือถือให้หน้าอยู่กลางจอ แล้วกด “เริ่มถ่าย”`}
+          <p className={pose ? 'step' : 'meta'} role="status" data-step={asked}>
+            {pose
+              ? words[pose]
+              : shutter
+                ? `มองกล้องตรง ๆ แล้วกด “ถ่ายรูป” รูปนี้คือรูปเช็คอินที่เก็บไว้ จากนั้นหันหน้าตามคำสั่งอีก ${steps.length - 1} ท่า ประมาณ 1.5 วินาที`
+                : `จะให้หันหน้าตามคำสั่ง ${steps.length} ท่า ท่าละประมาณ 1.5 วินาที ถือมือถือให้หน้าอยู่กลางจอ แล้วกด “เริ่มถ่าย”`}
           </p>
-          {pose && <p className="meta">{`ท่า ${step + 1}/${steps.length}`}</p>}
+          {pose && <p className="meta">{shutter ? 'ถ่ายรูปแล้ว ค้างท่าไว้จนกล้องปิด' : `ท่า ${step + 1}/${steps.length}`}</p>}
           {view}
         </>
       )}
       <div className="row">
         {!pose && (
           <button className="primary" disabled={!ready} onClick={run}>
-            เริ่มถ่าย
+            {shutter ? 'ถ่ายรูป' : 'เริ่มถ่าย'}
           </button>
         )}
         <button

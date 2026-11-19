@@ -5,7 +5,7 @@ import { Guided, type Pose } from './camera'
 import { supabase, url } from './supabase'
 
 type Frame = { pose: string; turn: number | null }
-type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null; frames?: Frame[] | null }
+type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null; frames?: Frame[] | null; photo?: string | null }
 type Query = Record<string, string>
 
 const errors: Record<string, string> = {
@@ -125,6 +125,7 @@ function Login() {
 function Home({ session }: { session: Session }) {
   const [enrolledAt, setEnrolledAt] = useState<string | null>()
   const [history, setHistory] = useState<Checkin[]>([])
+  const [photos, setPhotos] = useState<Record<string, string>>({})
   const [again, setAgain] = useState(false)
   const [consent, setConsent] = useState(false)
   const [camera, setCamera] = useState<{ steps: Pose[]; query: Query } | null>(null)
@@ -141,7 +142,7 @@ function Home({ session }: { session: Session }) {
   async function load() {
     const [enrollments, checkins] = await Promise.all([
       supabase.from('face_enrollments').select('id, created_at').order('id', { ascending: false }).limit(1),
-      supabase.from('face_checkins').select('id, created_at, status, reason, similarity, live').order('created_at', { ascending: false }).limit(20),
+      supabase.from('face_checkins').select('id, created_at, status, reason, similarity, live, photo').order('created_at', { ascending: false }).limit(20),
     ])
     if (enrollments.error || checkins.error) {
       setMsg('โหลดข้อมูลไม่ได้ ลองรีเฟรชหน้า')
@@ -149,6 +150,10 @@ function Home({ session }: { session: Session }) {
     }
     setEnrolledAt(enrollments.data[0]?.created_at ?? null)
     setHistory(checkins.data)
+    const paths = checkins.data.flatMap(row => (row.photo ? [row.photo] : []))
+    if (!paths.length) return
+    const { data } = await supabase.storage.from('checkin-photos').createSignedUrls(paths, 3600)
+    setPhotos(Object.fromEntries((data ?? []).flatMap(item => (item.path && item.signedUrl ? [[item.path, item.signedUrl]] : []))))
   }
 
   useEffect(() => {
@@ -252,7 +257,7 @@ function Home({ session }: { session: Session }) {
         <button onClick={() => supabase.auth.signOut()}>ออกจากระบบ</button>
       </div>
       {camera ? (
-        <Guided steps={camera.steps} onDone={frames => submit(camera.query, frames)} onCancel={() => setCamera(null)} />
+        <Guided steps={camera.steps} shutter={camera.query.action === 'checkin'} onDone={frames => submit(camera.query, frames)} onCancel={() => setCamera(null)} />
       ) : (
         <>
           {locked ? (
@@ -311,9 +316,10 @@ function Home({ session }: { session: Session }) {
             <section>
               <h2>ขอความยินยอมใช้ข้อมูลใบหน้า</h2>
               <ul>
-                <li>ระบบจะให้หันหน้า 5 ท่า แล้วแปลงแต่ละท่าเป็นตัวเลข 128 ค่าเก็บไว้เทียบตอนเช็คอิน ไม่เก็บรูป</li>
+                <li>ลงทะเบียน: ระบบจะให้หันหน้า 5 ท่า แล้วแปลงแต่ละท่าเป็นตัวเลข 128 ค่าเก็บไว้เทียบตอนเช็คอิน ไม่เก็บรูป 5 ท่านี้</li>
+                <li>เช็คอิน: กดถ่ายรูปหน้าตรง 1 รูป ระบบเก็บรูปนี้เป็นหลักฐาน แล้วให้หันหน้าอีก 1 ท่าเพื่อกันรูปถ่าย ภาพตอนหันใช้ตรวจแล้วไม่เก็บ</li>
                 <li>ข้อมูลใบหน้าเป็นข้อมูลชีวภาพตาม PDPA ม.26 จึงต้องขอความยินยอม</li>
-                <li>ลบได้ทุกเมื่อด้วยปุ่ม “ลบข้อมูลใบหน้า”</li>
+                <li>ลบข้อมูลใบหน้าได้ทุกเมื่อด้วยปุ่ม “ลบข้อมูลใบหน้า” ส่วนรูปและประวัติเช็คอินยังเก็บไว้เป็นหลักฐาน</li>
               </ul>
               <label className="check">
                 <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />
@@ -343,6 +349,7 @@ function Home({ session }: { session: Session }) {
           </p>
           {result.status !== 'pass' && <p>{say(reasons, result.reason)}</p>}
           {result.status !== 'pass' && ['spoof', 'challenge', 'mismatch'].includes(result.reason ?? '') && <p>ครั้งต่อไปต้องใส่รหัสผ่านก่อนสแกน</p>}
+          {result.photo && photos[result.photo] && <img className="shot" src={photos[result.photo]} alt="รูปเช็คอินที่เก็บไว้" />}
           <p className="meta">
             เวลา {when(result.created_at)}
             {two(result.similarity) && ` · ความเหมือน ${two(result.similarity)}`}
@@ -359,6 +366,7 @@ function Home({ session }: { session: Session }) {
           <table>
             <thead>
               <tr>
+                <th>รูป</th>
                 <th>เวลา</th>
                 <th>ผล</th>
                 <th>ความเหมือน</th>
@@ -368,6 +376,7 @@ function Home({ session }: { session: Session }) {
             <tbody>
               {history.map(row => (
                 <tr key={row.id}>
+                  <td>{row.photo && photos[row.photo] ? <img className="thumb" src={photos[row.photo]} alt={`รูปเช็คอิน ${when(row.created_at)}`} /> : '–'}</td>
                   <td>{when(row.created_at)}</td>
                   <td>{row.status === 'pass' ? 'ผ่าน ✓' : `⚠ ${say(reasons, row.reason) || 'ต้องตรวจสอบ'}`}</td>
                   <td>{two(row.similarity) ?? '–'}</td>
