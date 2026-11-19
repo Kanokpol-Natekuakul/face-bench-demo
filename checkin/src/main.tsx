@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { Guided, type Pose } from './camera'
 import { supabase, url } from './supabase'
 
-type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null; frames?: { pose: string; turn: number | null }[] | null }
+type Frame = { pose: string; turn: number | null }
+type Checkin = { id: number; created_at: string; status: string; reason: string | null; similarity: number | null; live: number | null; frames?: Frame[] | null }
 type Query = Record<string, string>
 
 const errors: Record<string, string> = {
@@ -40,6 +41,18 @@ const authErrors: Record<string, string> = {
 const say = (map: Record<string, string>, key: unknown) => (typeof key === 'string' && Object.hasOwn(map, key) ? map[key] : '')
 const when = (iso: string) => new Date(iso).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', dateStyle: 'medium', timeStyle: 'short' })
 const two = (n: unknown) => (typeof n === 'number' ? n.toFixed(2) : null)
+const lockable = ['spoof', 'challenge', 'mismatch']
+const turns = (frames?: Frame[] | null) => frames?.filter(frame => say(sides, frame.pose)).map(frame => `${say(sides, frame.pose)} ${two(frame.turn) ?? '–'}`).join(' · ') ?? ''
+const scores = (body: { live?: unknown; frames?: Frame[] | null }) => [two(body.live) && `หน้าสด ${two(body.live)}`, turns(body.frames) && `หัน ${turns(body.frames)}`].filter(Boolean).join(' · ')
+
+function signedInAt(token: string) {
+  try {
+    const at = Math.max(...JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).amr.map((a: { timestamp: number }) => a.timestamp))
+    return Number.isFinite(at) ? at * 1000 : 0
+  } catch {
+    return 0
+  }
+}
 
 function App() {
   const [session, setSession] = useState<Session | null>()
@@ -115,15 +128,15 @@ function Home({ session }: { session: Session }) {
   const [again, setAgain] = useState(false)
   const [consent, setConsent] = useState(false)
   const [camera, setCamera] = useState<{ steps: Pose[]; query: Query } | null>(null)
-  const [locked, setLocked] = useState(false)
+  const [forced, setForced] = useState(false)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<Checkin | null>(null)
   const [msg, setMsg] = useState('')
-  const turned = result?.frames
-    ?.filter(frame => say(sides, frame.pose))
-    .map(frame => `${say(sides, frame.pose)} ${two(frame.turn) ?? '–'}`)
-    .join(' · ')
+  const last = history[0]
+  const flagged = !!last && lockable.includes(last.reason ?? '') && Date.parse(last.created_at) > signedInAt(session.access_token)
+  const locked = forced || flagged
+  const turned = turns(result?.frames)
 
   async function load() {
     const [enrollments, checkins] = await Promise.all([
@@ -156,9 +169,12 @@ function Home({ session }: { session: Session }) {
       signal: AbortSignal.timeout(form ? 30_000 : 20_000),
     })
     const body = await res.json()
-    if (res.status === 423) setLocked(true)
-    else if (!res.ok) setMsg(say(errors, body?.error) || 'ระบบขัดข้อง ลองใหม่ภายหลัง')
-    if (res.status === 409) await load()
+    if (res.status === 423) setForced(true)
+    else if (!res.ok) {
+      const detail = scores(body ?? {})
+      setMsg(`${say(errors, body?.error) || 'ระบบขัดข้อง ลองใหม่ภายหลัง'}${detail ? ` (${detail})` : ''}`)
+    }
+    if (res.status === 409 || res.status === 423) await load()
     return res.ok ? body : null
   }
 
@@ -209,9 +225,9 @@ function Home({ session }: { session: Session }) {
     setBusy(false)
     if (error) setMsg(say(authErrors, error.code) || 'รหัสผ่านไม่ถูกต้อง')
     else {
-      setLocked(false)
+      setForced(false)
       setPassword('')
-      setMsg('ปลดล็อกแล้ว กดเช็คอินอีกครั้ง')
+      setMsg(enrolledAt ? 'ปลดล็อกแล้ว กดเช็คอินได้เลย' : 'ปลดล็อกแล้ว กดลงทะเบียนใบหน้าด้านล่างได้เลย')
     }
   }
 
@@ -248,7 +264,9 @@ function Home({ session }: { session: Session }) {
               }}
             >
               <h2>ล็อกการสแกนหน้าไว้ก่อน</h2>
-              <p>เช็คอินครั้งก่อนระบบสงสัยว่าเป็นรูป หน้าจอ หรือคนอื่น ใส่รหัสผ่านอีกครั้งเพื่อปลดล็อก เหมือน iPhone ที่ให้ใส่รหัสหลังสแกนหน้าไม่ผ่าน</p>
+              <p>
+                {flagged ? `เช็คอินเมื่อ ${when(last.created_at)} ติด “${say(reasons, last.reason)}”` : 'การสแกนครั้งก่อนไม่ผ่าน'} ใส่รหัสผ่านอีกครั้งเพื่อปลดล็อกก่อนสแกนหน้าหรือลงทะเบียน เหมือน iPhone ที่ให้ใส่รหัสหลังสแกนหน้าไม่ผ่าน
+              </p>
               <label>
                 รหัสผ่าน
                 <input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />

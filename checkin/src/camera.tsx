@@ -118,7 +118,7 @@ export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (fr
       ) : (
         <>
           <p className={pose ? 'step' : 'meta'} role="status" data-step={pose}>
-            {pose ? words[pose] : `จะให้หันหน้าตามคำสั่ง ${steps.length} ท่า ท่าละประมาณ 1.5 วินาที ถือมือถือให้หน้าอยู่กลางจอ แล้วกด “เริ่ม”`}
+            {pose ? words[pose] : `จะให้หันหน้าตามคำสั่ง ${steps.length} ท่า ท่าละประมาณ 1.5 วินาที ถือมือถือให้หน้าอยู่กลางจอ แล้วกด “เริ่มถ่าย”`}
           </p>
           {pose && <p className="meta">{`ท่า ${step + 1}/${steps.length}`}</p>}
           {view}
@@ -127,7 +127,7 @@ export function Guided({ steps, onDone, onCancel }: { steps: Pose[]; onDone: (fr
       <div className="row">
         {!pose && (
           <button className="primary" disabled={!ready} onClick={run}>
-            เริ่ม
+            เริ่มถ่าย
           </button>
         )}
         <button
